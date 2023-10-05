@@ -85,16 +85,17 @@ func (r restorer) restore(src, dst string) error {
 		defer internal.CloseWithErrLogf(r.logger, pw, "pw close defer")
 
 		level.Info(r.logger).Log("msg", "downloading archived directory", "remote", src, "local", dst)
-
+		startTime := time.Now()
 		if err := r.s.Get(src, pw); err != nil {
 			if err := pw.CloseWithError(fmt.Errorf("get file from storage backend, pipe writer failed, %w", err)); err != nil {
 				level.Error(r.logger).Log("msg", "pw close", "err", err)
 			}
 		}
+		level.Info(r.logger).Log("msg", "downloaded archived directory", "took", time.Since(startTime))
 	}()
 
 	level.Info(r.logger).Log("msg", "extracting archived directory", "remote", src, "local", dst)
-
+	startTime := time.Now()
 	written, err := r.a.Extract(dst, pr)
 	if err != nil {
 		err = fmt.Errorf("extract files from downloaded archive, pipe reader failed, %w", err)
@@ -104,7 +105,7 @@ func (r restorer) restore(src, dst string) error {
 
 		return err
 	}
-
+	level.Info(r.logger).Log("msg", "extracted archived directory", "took", time.Since(startTime))
 	level.Debug(r.logger).Log(
 		"msg", "archive extracted",
 		"local", dst,
