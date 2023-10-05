@@ -95,6 +95,7 @@ func (r restorer) restore(src, dst string) error {
 	}()
 
 	level.Info(r.logger).Log("msg", "extracting archived directory", "remote", src, "local", dst)
+
 	written, err := r.a.Extract(dst, pr)
 	if err != nil {
 		err = fmt.Errorf("extract files from downloaded archive, pipe reader failed, %w", err)
@@ -104,6 +105,7 @@ func (r restorer) restore(src, dst string) error {
 
 		return err
 	}
+
 	level.Debug(r.logger).Log(
 		"msg", "archive extracted",
 		"local", dst,
