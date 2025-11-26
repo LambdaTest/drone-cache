@@ -33,10 +33,11 @@ type Backend struct {
 // New creates an S3 backend.
 func New(l log.Logger, c Config, debug bool) (*Backend, error) {
 	conf := &aws.Config{
-		Region:           aws.String(c.Region),
-		Endpoint:         &c.Endpoint,
-		DisableSSL:       aws.Bool(!strings.HasPrefix(c.Endpoint, "https://")),
-		S3ForcePathStyle: aws.Bool(c.PathStyle),
+		Region: aws.String(c.Region),
+	}
+	if c.Endpoint != "" {
+		conf.Endpoint = aws.String(c.Endpoint)
+		conf.S3ForcePathStyle = aws.Bool(true)
 	}
 
 	// Use anonymous credentials if the S3 bucket is public
