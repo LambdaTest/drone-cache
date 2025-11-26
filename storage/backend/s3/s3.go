@@ -45,7 +45,10 @@ func New(l log.Logger, c Config, debug bool) (*Backend, error) {
 	}
 
 	if c.Key != "" && c.Secret != "" {
-		conf.Credentials = credentials.NewStaticCredentials(c.Key, c.Secret, "")
+		conf.Credentials = credentials.NewStaticCredentials(c.Key, c.Secret, c.SessionToken)
+		if c.SessionToken != "" {
+			conf.Credentials = credentials.NewStaticCredentials(c.Key, c.Secret, c.SessionToken)
+		}
 	} else {
 		level.Warn(l).Log("msg", "aws key and/or Secret not provided (falling back to anonymous credentials)")
 	}
