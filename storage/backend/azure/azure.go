@@ -5,14 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
-	"github.com/Azure/azure-storage-blob-go/azblob"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/sas"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/meltwater/drone-cache/internal"
@@ -20,95 +25,92 @@ import (
 )
 
 const (
-	// DefaultBlobMaxRetryRequests Default value for Azure Blob Storage Max Retry Requests.
+	// DefaultBlobMaxRetryRequests is the default value for Azure Blob Storage max retry requests.
 	DefaultBlobMaxRetryRequests = 4
 
 	defaultBufferSize = 4 * 1024 * 1024
 	defaultMaxBuffers = 4
 )
 
-// Backend implements sotrage.Backend for Azure Blob Storage.
+// Backend implements storage.Backend for Azure Blob Storage.
 type Backend struct {
-	logger              log.Logger
-	httpClient          *http.Client
-	cfg                 Config
-	containerURL        azblob.ContainerURL
-	sasToken            string
-	sharedKeyCredential azblob.StorageAccountCredential
+	logger          log.Logger
+	cfg             Config
+	containerClient *container.Client
+	sharedKeyCred   *azblob.SharedKeyCredential
+	sasToken        string
 }
 
-// New creates an AzureBlob backend.
+// New creates an Azure Blob Storage backend.
 func New(l log.Logger, c Config) (*Backend, error) {
-	var credential azblob.Credential
-
-	var err error
-	b := &Backend{
-		logger:     l,
-		cfg:        c,
-		httpClient: http.DefaultClient,
-	}
 	if c.AccountName == "" {
 		return nil, errors.New("azure account name is required")
 	}
-	// 2. Create a default request pipeline using your storage account name and account key.
-	if c.SASToken != "" {
-		level.Info(l).Log("msg", "using token for cache operation")
-		credential = azblob.NewAnonymousCredential()
-	} else if c.AccountKey == "" {
-		return nil, errors.New("azure account key is required")
-	} else if c.AccountKey != "" {
-		credential, err = azblob.NewSharedKeyCredential(c.AccountName, c.AccountKey)
+
+	b := &Backend{
+		logger:   l,
+		cfg:      c,
+		sasToken: c.SASToken,
+	}
+
+	var (
+		containerClient *container.Client
+		err             error
+	)
+
+	switch {
+	case c.ClientID != "" && c.ClientSecret != "" && c.TenantID != "":
+		// Service Principal authentication.
+		level.Info(l).Log("msg", "using service principal for cache operation")
+		cred, credErr := azidentity.NewClientSecretCredential(c.TenantID, c.ClientID, c.ClientSecret, nil)
+		if credErr != nil {
+			return nil, fmt.Errorf("azure spn credential, %w", credErr)
+		}
+		containerClient, err = container.NewClient(blobContainerURL(c), cred, nil)
 		if err != nil {
-			return nil, fmt.Errorf("azure, invalid credentials, %w", err)
+			return nil, fmt.Errorf("azure container client, %w", err)
 		}
-		var ok bool
-		b.sharedKeyCredential, ok = credential.(azblob.StorageAccountCredential)
-		if !ok {
-			return nil, errors.New("azure, invalid credentials")
+
+	case c.SASToken != "":
+		// Shared Access Signature authentication.
+		level.Info(l).Log("msg", "using SAS token for cache operation")
+		containerClient, err = container.NewClientWithNoCredential(blobContainerURL(c), nil)
+		if err != nil {
+			return nil, fmt.Errorf("azure container client, %w", err)
+		}
+
+	default:
+		// Shared account key authentication.
+		if c.AccountKey == "" {
+			return nil, errors.New("azure account key is required")
+		}
+		cred, credErr := azblob.NewSharedKeyCredential(c.AccountName, c.AccountKey)
+		if credErr != nil {
+			return nil, fmt.Errorf("azure shared key credential, %w", credErr)
+		}
+		b.sharedKeyCred = cred
+		containerClient, err = container.NewClientWithSharedKeyCredential(blobContainerURL(c), cred, nil)
+		if err != nil {
+			return nil, fmt.Errorf("azure container client, %w", err)
 		}
 	}
 
-	// 3. Azurite has different URL pattern than production Azure Blob Storage.
-	var blobURL *url.URL
-	if c.Azurite {
-		blobURL, err = url.Parse(fmt.Sprintf("http://%s/%s/%s", c.BlobStorageURL, c.AccountName, c.ContainerName))
-	} else {
-		blobURL, err = url.Parse(fmt.Sprintf("https://%s.%s/%s", c.AccountName, c.BlobStorageURL, c.ContainerName))
-	}
-
-	if c.SASToken != "" {
-		blobURL.RawQuery = c.SASToken
-	}
-
-	if err != nil {
-		level.Error(l).Log("msg", "can't create url with : "+err.Error())
-	}
-
-	pipeline := azblob.NewPipeline(credential, azblob.PipelineOptions{
-		Retry: azblob.RetryOptions{
-			TryTimeout: 30 * time.Minute,
-		},
-	})
-	containerURL := azblob.NewContainerURL(*blobURL, pipeline)
-
-	// 4. Always creating new container, it will throw error if it already exists.
 	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
 	defer cancel()
 
-	_, err = containerURL.Create(ctx, azblob.Metadata{}, azblob.PublicAccessNone)
+	_, err = containerClient.Create(ctx, nil)
 	if err != nil {
 		// nolint: errorlint
-		ret, ok := err.(azblob.StorageError)
-		if !ok {
+		var respErr *azcore.ResponseError
+		if !errors.As(err, &respErr) {
 			return nil, fmt.Errorf("azure, unexpected error, %w", err)
 		}
-
-		if ret.ServiceCode() == "ContainerAlreadyExists" {
+		if bloberror.HasCode(err, bloberror.ContainerAlreadyExists) {
 			level.Error(l).Log("msg", "container already exists", "err", err)
 		}
 	}
-	b.containerURL = containerURL
-	b.sasToken = c.SASToken
+
+	b.containerClient = containerClient
 	return b, nil
 }
 
@@ -118,8 +120,11 @@ func (b *Backend) Get(ctx context.Context, p string, w io.Writer) error {
 
 	go func() {
 		defer close(errCh)
-		var respBody io.ReadCloser
-		var err error
+
+		var (
+			respBody io.ReadCloser
+			err      error
+		)
 
 		if b.cfg.CDNHost != "" {
 			b.logger.Log("msg", "using cdn host")
@@ -144,24 +149,18 @@ func (b *Backend) Get(ctx context.Context, p string, w io.Writer) error {
 				return
 			}
 			respBody = resp.Body
-			defer internal.CloseWithErrLogf(b.logger, respBody, "response body, close defer")
-
 		} else {
-			blobURL := b.containerURL.NewBlockBlobURL(p)
-			resp, err := blobURL.Download(ctx, 0, azblob.CountToEnd,
-				azblob.BlobAccessConditions{}, false, azblob.ClientProvidedKeyOptions{})
+			resp, err := b.containerClient.NewBlockBlobClient(p).DownloadStream(ctx, nil)
 			if err != nil {
 				errCh <- fmt.Errorf("get the object, %w", err)
-
 				return
 			}
-
-			respBody = resp.Body(azblob.RetryReaderOptions{MaxRetryRequests: b.cfg.MaxRetryRequests})
-			defer internal.CloseWithErrLogf(b.logger, respBody, "response body, close defer")
+			respBody = resp.Body
 		}
 
-		_, err = io.Copy(w, respBody)
-		if err != nil {
+		defer internal.CloseWithErrLogf(b.logger, respBody, "response body, close defer")
+
+		if _, err = io.Copy(w, respBody); err != nil {
 			errCh <- fmt.Errorf("copy the object, %w", err)
 		}
 	}()
@@ -179,13 +178,11 @@ func (b *Backend) Get(ctx context.Context, p string, w io.Writer) error {
 func (b *Backend) Put(ctx context.Context, p string, r io.Reader) error {
 	b.logger.Log("msg", "uploading the file with blob", "name", p)
 
-	blobURL := b.containerURL.NewBlockBlobURL(p)
-	if _, err := azblob.UploadStreamToBlockBlob(ctx, r, blobURL,
-		azblob.UploadStreamToBlockBlobOptions{
-			BufferSize: defaultBufferSize,
-			MaxBuffers: defaultMaxBuffers,
-		},
-	); err != nil {
+	_, err := b.containerClient.NewBlockBlobClient(p).UploadStream(ctx, r, &blockblob.UploadStreamOptions{
+		BlockSize:   defaultBufferSize,
+		Concurrency: defaultMaxBuffers,
+	})
+	if err != nil {
 		return fmt.Errorf("put the object, %w", err)
 	}
 
@@ -196,47 +193,65 @@ func (b *Backend) Put(ctx context.Context, p string, r io.Reader) error {
 func (b *Backend) Exists(ctx context.Context, p string) (bool, error) {
 	b.logger.Log("msg", "checking if the object already exists", "name", p)
 
-	blobURL := b.containerURL.NewBlockBlobURL(p)
-
-	get, err := blobURL.GetProperties(ctx, azblob.BlobAccessConditions{}, azblob.ClientProvidedKeyOptions{})
+	_, err := b.containerClient.NewBlockBlobClient(p).GetProperties(ctx, nil)
 	if err != nil {
+		if bloberror.HasCode(err, bloberror.BlobNotFound) {
+			return false, nil
+		}
 		return false, fmt.Errorf("check if object exists, %w", err)
 	}
 
-	return get.StatusCode() == http.StatusOK, nil
+	return true, nil
 }
 
-// Exists checks if path already exists.
+// generateSASTokenWithCDN generates a URL pointing at the CDN host, authenticated with a SAS token.
 func (b *Backend) generateSASTokenWithCDN(containerName, blobPath string) (string, error) {
 	if runtime.GOOS == "windows" {
-		containerName = strings.Replace(containerName, "\\", "/", -1) // Replace backslashes with forward slashes
-		blobPath = strings.Replace(blobPath, "\\", "/", -1)           // Replace backslashes with forward slashes
-	}
-	parts := azblob.BlobURLParts{
-		Scheme:        "https",
-		Host:          b.cfg.CDNHost,
-		ContainerName: containerName,
-		BlobName:      blobPath,
-	}
-	var rawURL url.URL
-	if b.sasToken == "" {
-		sasDefaultSignature := azblob.BlobSASSignatureValues{
-			Protocol:      azblob.SASProtocolHTTPS,
-			ExpiryTime:    time.Now().UTC().Add(12 * time.Hour),
-			ContainerName: containerName,
-			BlobName:      blobPath,
-			Permissions:   azblob.BlobSASPermissions{Read: true, List: true}.String(),
-		}
-		sasQueryParams, err := sasDefaultSignature.NewSASQueryParameters(b.sharedKeyCredential)
-		if err != nil {
-			return "", err
-		}
-		parts.SAS = sasQueryParams
-		rawURL = parts.URL()
-	} else {
-		rawURL = parts.URL()
-		rawURL.RawQuery = b.sasToken
+		containerName = strings.ReplaceAll(containerName, "\\", "/")
+		blobPath = strings.ReplaceAll(blobPath, "\\", "/")
 	}
 
+	rawURL := url.URL{
+		Scheme: "https",
+		Host:   b.cfg.CDNHost,
+		Path:   "/" + containerName + "/" + blobPath,
+	}
+
+	if b.sasToken != "" {
+		rawURL.RawQuery = b.sasToken
+		return rawURL.String(), nil
+	}
+
+	if b.sharedKeyCred == nil {
+		return "", errors.New("CDN SAS generation requires shared key credential")
+	}
+
+	perms := sas.BlobPermissions{Read: true, List: true}
+	queryParams, err := sas.BlobSignatureValues{
+		Protocol:      sas.ProtocolHTTPS,
+		ExpiryTime:    time.Now().UTC().Add(12 * time.Hour),
+		ContainerName: containerName,
+		BlobName:      blobPath,
+		Permissions:   perms.String(),
+	}.SignWithSharedKey(b.sharedKeyCred)
+	if err != nil {
+		return "", fmt.Errorf("generate SAS token, %w", err)
+	}
+
+	rawURL.RawQuery = queryParams.Encode()
 	return rawURL.String(), nil
+}
+
+// blobContainerURL builds the full container URL, appending a SAS token when present.
+func blobContainerURL(c Config) string {
+	var base string
+	if c.Azurite {
+		base = fmt.Sprintf("http://%s/%s/%s", c.BlobStorageURL, c.AccountName, c.ContainerName)
+	} else {
+		base = fmt.Sprintf("https://%s.%s/%s", c.AccountName, c.BlobStorageURL, c.ContainerName)
+	}
+	if c.SASToken != "" {
+		return base + "?" + c.SASToken
+	}
+	return base
 }
