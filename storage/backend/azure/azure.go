@@ -48,10 +48,24 @@ func New(l log.Logger, c Config) (*Backend, error) {
 		return nil, errors.New("azure account name is required")
 	}
 
+	if c.CDNHost != "" && c.ClientID != "" {
+		return nil, errors.New("CDN is not supported with service principal authentication; use account key or SAS token")
+	}
+
 	b := &Backend{
 		logger:   l,
 		cfg:      c,
 		sasToken: c.SASToken,
+	}
+
+	spnCount := 0
+	for _, v := range []bool{c.ClientID != "", c.ClientSecret != "", c.TenantID != ""} {
+		if v {
+			spnCount++
+		}
+	}
+	if spnCount > 0 && spnCount < 3 {
+		return nil, errors.New("all three SPN fields (ClientID, ClientSecret, TenantID) must be provided together")
 	}
 
 	var (
@@ -100,7 +114,6 @@ func New(l log.Logger, c Config) (*Backend, error) {
 
 	_, err = containerClient.Create(ctx, nil)
 	if err != nil {
-		// nolint: errorlint
 		var respErr *azcore.ResponseError
 		if !errors.As(err, &respErr) {
 			return nil, fmt.Errorf("azure, unexpected error, %w", err)
