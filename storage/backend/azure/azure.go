@@ -14,6 +14,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
@@ -79,11 +80,8 @@ func New(l log.Logger, c Config) (*Backend, error) {
 			return nil, fmt.Errorf("azure container client, %w", err)
 		}
 
-	default:
+	case c.AccountKey != "":
 		// Shared account key authentication.
-		if c.AccountKey == "" {
-			return nil, errors.New("azure account key is required")
-		}
 		cred, credErr := azblob.NewSharedKeyCredential(c.AccountName, c.AccountKey)
 		if credErr != nil {
 			return nil, fmt.Errorf("azure shared key credential, %w", credErr)
@@ -93,6 +91,8 @@ func New(l log.Logger, c Config) (*Backend, error) {
 		if err != nil {
 			return nil, fmt.Errorf("azure container client, %w", err)
 		}
+	default:
+		return nil, errors.New("insufficient azure authentication credentials")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
@@ -107,6 +107,8 @@ func New(l log.Logger, c Config) (*Backend, error) {
 		}
 		if bloberror.HasCode(err, bloberror.ContainerAlreadyExists) {
 			level.Error(l).Log("msg", "container already exists", "err", err)
+		} else {
+			return nil, fmt.Errorf("azure, create container, %w", err)
 		}
 	}
 
@@ -155,7 +157,9 @@ func (b *Backend) Get(ctx context.Context, p string, w io.Writer) error {
 				errCh <- fmt.Errorf("get the object, %w", err)
 				return
 			}
-			respBody = resp.Body
+			respBody = resp.NewRetryReader(ctx, &blob.RetryReaderOptions{
+				MaxRetries: int32(b.cfg.MaxRetryRequests),
+			})
 		}
 
 		defer internal.CloseWithErrLogf(b.logger, respBody, "response body, close defer")
