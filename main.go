@@ -458,6 +458,21 @@ func main() {
 			EnvVars: []string{"AZURE_BLOB_MAX_RETRY_REQUESTS"},
 			Value:   azure.DefaultBlobMaxRetryRequests,
 		},
+		&cli.StringFlag{
+			Name:    "azure.client-id",
+			Usage:   "Azure AD application (client) ID for SPN auth",
+			EnvVars: []string{"PLUGIN_AZURE_CLIENT_ID", "AZURE_CLIENT_ID"},
+		},
+		&cli.StringFlag{
+			Name:    "azure.client-secret",
+			Usage:   "Azure AD application secret for SPN auth",
+			EnvVars: []string{"PLUGIN_AZURE_CLIENT_SECRET", "AZURE_CLIENT_SECRET"},
+		},
+		&cli.StringFlag{
+			Name:    "azure.tenant-id",
+			Usage:   "Azure AD tenant ID for SPN auth",
+			EnvVars: []string{"PLUGIN_AZURE_TENANT_ID", "AZURE_TENANT_ID"},
+		},
 
 		// SFTP specific Config flags
 
@@ -605,6 +620,9 @@ func run(c *cli.Context) error {
 			CDNHost:        c.String("azure.cdn-host"),
 			Azurite:        false,
 			Timeout:        c.Duration("backend.operation-timeout"),
+			ClientID:       c.String("azure.client-id"),
+			ClientSecret:   c.String("azure.client-secret"),
+			TenantID:       c.String("azure.tenant-id"),
 		},
 		SFTP: sftp.Config{
 			CacheRoot: c.String("sftp.cache-root"),
