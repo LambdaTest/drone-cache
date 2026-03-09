@@ -48,7 +48,7 @@ func New(l log.Logger, c Config) (*Backend, error) {
 		return nil, errors.New("azure account name is required")
 	}
 
-	if c.CDNHost != "" && c.ClientID != "" {
+	if c.CDNHost != "" && c.ClientID != "" && c.AccountKey == "" && c.SASToken == "" {
 		return nil, errors.New("CDN is not supported with service principal authentication; use account key or SAS token")
 	}
 
@@ -64,7 +64,7 @@ func New(l log.Logger, c Config) (*Backend, error) {
 			spnCount++
 		}
 	}
-	if spnCount > 0 && spnCount < 3 {
+	if spnCount > 0 && spnCount < 3 && c.AccountKey == "" && c.SASToken == "" {
 		return nil, errors.New("all three SPN fields (ClientID, ClientSecret, TenantID) must be provided together")
 	}
 
@@ -74,14 +74,14 @@ func New(l log.Logger, c Config) (*Backend, error) {
 	)
 
 	switch {
-	case c.ClientID != "" && c.ClientSecret != "" && c.TenantID != "":
-		// Service Principal authentication.
-		level.Info(l).Log("msg", "using service principal for cache operation")
-		cred, credErr := azidentity.NewClientSecretCredential(c.TenantID, c.ClientID, c.ClientSecret, nil)
+	case c.AccountKey != "":
+		// Shared account key authentication.
+		cred, credErr := azblob.NewSharedKeyCredential(c.AccountName, c.AccountKey)
 		if credErr != nil {
-			return nil, fmt.Errorf("azure spn credential, %w", credErr)
+			return nil, fmt.Errorf("azure shared key credential, %w", credErr)
 		}
-		containerClient, err = container.NewClient(blobContainerURL(c), cred, nil)
+		b.sharedKeyCred = cred
+		containerClient, err = container.NewClientWithSharedKeyCredential(blobContainerURL(c), cred, nil)
 		if err != nil {
 			return nil, fmt.Errorf("azure container client, %w", err)
 		}
@@ -94,17 +94,18 @@ func New(l log.Logger, c Config) (*Backend, error) {
 			return nil, fmt.Errorf("azure container client, %w", err)
 		}
 
-	case c.AccountKey != "":
-		// Shared account key authentication.
-		cred, credErr := azblob.NewSharedKeyCredential(c.AccountName, c.AccountKey)
+	case c.ClientID != "" && c.ClientSecret != "" && c.TenantID != "":
+		// Service Principal authentication.
+		level.Info(l).Log("msg", "using service principal for cache operation")
+		cred, credErr := azidentity.NewClientSecretCredential(c.TenantID, c.ClientID, c.ClientSecret, nil)
 		if credErr != nil {
-			return nil, fmt.Errorf("azure shared key credential, %w", credErr)
+			return nil, fmt.Errorf("azure spn credential, %w", credErr)
 		}
-		b.sharedKeyCred = cred
-		containerClient, err = container.NewClientWithSharedKeyCredential(blobContainerURL(c), cred, nil)
+		containerClient, err = container.NewClient(blobContainerURL(c), cred, nil)
 		if err != nil {
 			return nil, fmt.Errorf("azure container client, %w", err)
 		}
+
 	default:
 		return nil, errors.New("insufficient azure authentication credentials")
 	}

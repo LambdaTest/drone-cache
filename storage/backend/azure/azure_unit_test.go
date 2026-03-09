@@ -88,7 +88,8 @@ func TestNewValidation(t *testing.T) {
 			wantErr: "azure account name is required",
 		},
 		{
-			name: "CDN with SPN rejected",
+			// CDN+SPN with no fallback auth: rejected.
+			name: "CDN with SPN and no fallback auth rejected",
 			cfg: Config{
 				AccountName:  "myaccount",
 				CDNHost:      "mycdn.azureedge.net",
@@ -99,7 +100,7 @@ func TestNewValidation(t *testing.T) {
 			wantErr: "CDN is not supported with service principal authentication",
 		},
 		{
-			name: "partial SPN - ClientID and TenantID only",
+			name: "partial SPN - ClientID and TenantID only, no fallback",
 			cfg: Config{
 				AccountName: "myaccount",
 				ClientID:    "client-id",
@@ -108,7 +109,7 @@ func TestNewValidation(t *testing.T) {
 			wantErr: "all three SPN fields (ClientID, ClientSecret, TenantID) must be provided together",
 		},
 		{
-			name: "partial SPN - ClientID only",
+			name: "partial SPN - ClientID only, no fallback",
 			cfg: Config{
 				AccountName: "myaccount",
 				ClientID:    "client-id",
@@ -116,7 +117,7 @@ func TestNewValidation(t *testing.T) {
 			wantErr: "all three SPN fields (ClientID, ClientSecret, TenantID) must be provided together",
 		},
 		{
-			name: "partial SPN - ClientSecret and TenantID only",
+			name: "partial SPN - ClientSecret and TenantID only, no fallback",
 			cfg: Config{
 				AccountName:  "myaccount",
 				ClientSecret: "client-secret",
@@ -146,6 +147,65 @@ func TestNewValidation(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantErr) {
 				t.Errorf("New() error = %q, want it to contain %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestNewPartialSPNWithFallbackAuth verifies that partial SPN fields are silently
+// ignored when a higher-priority auth (AccountKey or SASToken) is present.
+func TestNewPartialSPNWithFallbackAuth(t *testing.T) {
+	t.Parallel()
+
+	logger := log.NewNopLogger()
+
+	spnErr := "all three SPN fields (ClientID, ClientSecret, TenantID) must be provided together"
+	cdnSPNErr := "CDN is not supported with service principal authentication"
+
+	tests := []struct {
+		name string
+		cfg  Config
+	}{
+		{
+			name: "partial SPN + AccountKey uses AccountKey",
+			cfg: Config{
+				AccountName: "myaccount",
+				AccountKey:  "c29tZWtleQ==",
+				ClientID:    "client-id",
+				Timeout:     5 * time.Second,
+			},
+		},
+		{
+			name: "partial SPN + SASToken uses SASToken",
+			cfg: Config{
+				AccountName:    "myaccount",
+				BlobStorageURL: "blob.core.windows.net",
+				ContainerName:  "mycontainer",
+				SASToken:       "sv=2020-08-04&ss=b",
+				ClientID:       "client-id",
+				Timeout:        5 * time.Second,
+			},
+		},
+		{
+			name: "CDN + partial SPN + AccountKey uses AccountKey (CDN+SPN check skipped)",
+			cfg: Config{
+				AccountName: "myaccount",
+				AccountKey:  "c29tZWtleQ==",
+				CDNHost:     "mycdn.azureedge.net",
+				ClientID:    "client-id",
+				Timeout:     5 * time.Second,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := New(logger, tc.cfg)
+			// We expect an error (no real Azure endpoint), but NOT a validation error.
+			if err != nil && (strings.Contains(err.Error(), spnErr) || strings.Contains(err.Error(), cdnSPNErr)) {
+				t.Errorf("New() returned validation error unexpectedly: %v", err)
 			}
 		})
 	}
