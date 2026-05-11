@@ -615,7 +615,7 @@ func run(c *cli.Context) error {
 			AccountName:    c.String("azure.account-name"),
 			SASToken:       c.String("azure.sas-token"),
 			AccountKey:     c.String("azure.account-key"),
-			ContainerName:  c.String("azure.container-name"),
+			ContainerName:  c.String("azure.blob-container-name"),
 			BlobStorageURL: c.String("azure.blob-storage-url"),
 			CDNHost:        c.String("azure.cdn-host"),
 			Azurite:        false,
