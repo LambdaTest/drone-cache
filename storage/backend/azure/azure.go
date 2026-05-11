@@ -110,19 +110,24 @@ func New(l log.Logger, c Config) (*Backend, error) {
 		return nil, errors.New("insufficient azure authentication credentials")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
-	defer cancel()
+	// A SAS token is scoped to an existing container and lacks account-level
+	// permission to create one, so Create() would return 403 AuthorizationFailure.
+	// The container is guaranteed to exist (the SAS issuer signed for it).
+	if c.SASToken == "" {
+		ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
+		defer cancel()
 
-	_, err = containerClient.Create(ctx, nil)
-	if err != nil {
-		var respErr *azcore.ResponseError
-		if !errors.As(err, &respErr) {
-			return nil, fmt.Errorf("azure, unexpected error, %w", err)
-		}
-		if bloberror.HasCode(err, bloberror.ContainerAlreadyExists) {
-			level.Error(l).Log("msg", "container already exists", "err", err)
-		} else {
-			return nil, fmt.Errorf("azure, create container, %w", err)
+		_, err = containerClient.Create(ctx, nil)
+		if err != nil {
+			var respErr *azcore.ResponseError
+			if !errors.As(err, &respErr) {
+				return nil, fmt.Errorf("azure, unexpected error, %w", err)
+			}
+			if bloberror.HasCode(err, bloberror.ContainerAlreadyExists) {
+				level.Error(l).Log("msg", "container already exists", "err", err)
+			} else {
+				return nil, fmt.Errorf("azure, create container, %w", err)
+			}
 		}
 	}
 
