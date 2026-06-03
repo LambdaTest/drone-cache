@@ -118,7 +118,15 @@ func New(l log.Logger, c Config) (*Backend, error) {
 	// A SAS token is scoped to an existing container and lacks account-level
 	// permission to create one, so Create() would return 403 AuthorizationFailure.
 	// The container is guaranteed to exist (the SAS issuer signed for it).
-	if c.SASToken == "" {
+	//
+	// Likewise skip Create() when no explicit container name is configured. A
+	// legacy foreman (pre-TE-13070) drops --azure.blob-container-name and passes
+	// --remote-root cache instead, so the container rides in as the first segment
+	// of the blob key (cache/<orgid>/...) and blobContainerURL() resolves to the
+	// account root. Create() against the root returns 400 InvalidQueryParameterValue.
+	// The container already exists in that layout, and NewBlockBlobClient(p) routes
+	// the leading path segment as the container, so creation is both wrong and unneeded.
+	if c.SASToken == "" && c.ContainerName != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
 		defer cancel()
 
