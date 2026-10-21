@@ -297,7 +297,9 @@ func extractLink(h *tar.Header, target string) error {
 
 func unlink(path string) error {
 	if _, err := os.Lstat(path); err == nil {
-		return fmt.Errorf("error with unlinking: %w", os.Remove(path))
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("error with unlinking: %w", err)
+		}
 	}
 
 	return nil
