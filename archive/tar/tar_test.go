@@ -1,6 +1,8 @@
 package tar
 
 import (
+	"archive/tar"
+	"bytes"
 	"io"
 	"io/ioutil"
 	"os"
@@ -307,6 +309,34 @@ func TestExtract(t *testing.T) {
 }
 
 // Helpers
+
+func TestExtractLinksOverExistingFiles(t *testing.T) {
+	dst := t.TempDir()
+	target := filepath.Join(dst, "target")
+	test.Ok(t, ioutil.WriteFile(target, []byte("hello\n"), 0644))
+
+	symlink := filepath.Join(dst, "symlink")
+	hardlink := filepath.Join(dst, "hardlink")
+	test.Ok(t, ioutil.WriteFile(symlink, []byte("stale\n"), 0644))
+	test.Ok(t, ioutil.WriteFile(hardlink, []byte("stale\n"), 0644))
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	test.Ok(t, tw.WriteHeader(&tar.Header{Typeflag: tar.TypeSymlink, Name: symlink, Linkname: target}))
+	test.Ok(t, tw.WriteHeader(&tar.Header{Typeflag: tar.TypeLink, Name: hardlink, Linkname: target}))
+	test.Ok(t, tw.Close())
+
+	_, err := New(log.NewNopLogger(), dst, false).Extract(dst, &buf)
+	test.Ok(t, err)
+
+	gotTarget, err := os.Readlink(symlink)
+	test.Ok(t, err)
+	test.Equals(t, gotTarget, target)
+
+	got, err := ioutil.ReadFile(hardlink)
+	test.Ok(t, err)
+	test.Equals(t, string(got), "hello\n")
+}
 
 func create(a *Archive, srcs []string, dst string) (int64, error) {
 	pr, pw := io.Pipe()
