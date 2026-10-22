@@ -3,6 +3,7 @@ package tar
 import (
 	"archive/tar"
 	"bytes"
+	"errors"
 	"io"
 	"io/ioutil"
 	"os"
@@ -336,6 +337,57 @@ func TestExtractLinksOverExistingFiles(t *testing.T) {
 	got, err := ioutil.ReadFile(hardlink)
 	test.Ok(t, err)
 	test.Equals(t, string(got), "hello\n")
+}
+
+func TestCreateStoresMountInsideRootRelative(t *testing.T) {
+	root := t.TempDir()
+	mount := filepath.Join(root, "node_modules")
+	test.Ok(t, os.MkdirAll(mount, 0755))
+	test.Ok(t, ioutil.WriteFile(filepath.Join(mount, "mocha.js"), []byte("mocha\n"), 0644))
+
+	var buf bytes.Buffer
+	_, err := New(log.NewNopLogger(), root, false).Create([]string{mount}, &buf)
+	test.Ok(t, err)
+
+	var names []string
+	tr := tar.NewReader(&buf)
+	for {
+		h, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		test.Ok(t, err)
+		names = append(names, h.Name)
+	}
+	test.Equals(t, names, []string{"node_modules", "node_modules/mocha.js"})
+}
+
+func TestExtractAbsoluteArchiveOfRelativeMountIntoCurrentDirectory(t *testing.T) {
+	built := filepath.Join(t.TempDir(), "concierge_39")
+	restoring := filepath.Join(t.TempDir(), "concierge_40")
+	test.Ok(t, os.MkdirAll(restoring, 0755))
+	t.Chdir(restoring)
+
+	mount := filepath.Join(built, "node_modules")
+	content := []byte("mocha\n")
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	test.Ok(t, tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: mount, Mode: 0755}))
+	test.Ok(t, tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: mount + "/.bin", Mode: 0755}))
+	test.Ok(t, tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: mount + "/mocha.js", Mode: 0644, Size: int64(len(content))}))
+	_, err := tw.Write(content)
+	test.Ok(t, err)
+	test.Ok(t, tw.WriteHeader(&tar.Header{Typeflag: tar.TypeSymlink, Name: mount + "/.bin/_mocha", Linkname: "../mocha.js"}))
+	test.Ok(t, tw.Close())
+
+	_, err = New(log.NewNopLogger(), restoring, false).Extract("node_modules", &buf)
+	test.Ok(t, err)
+
+	got, err := ioutil.ReadFile(filepath.Join(restoring, "node_modules", ".bin", "_mocha"))
+	test.Ok(t, err)
+	test.Equals(t, got, content)
+	_, err = os.Lstat(built)
+	test.Assert(t, os.IsNotExist(err), "archive restored into the directory it was created in: %v", err)
 }
 
 func create(a *Archive, srcs []string, dst string) (int64, error) {

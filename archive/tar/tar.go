@@ -84,14 +84,7 @@ func writeToArchive(tw *tar.Writer, root string, skipSymlinks bool, written *int
 			}
 		}
 
-		var name string
-
-		if strings.HasPrefix(path, "/") {
-			name, err = filepath.Abs(path)
-		} else {
-			name, err = relative(root, path)
-		}
-
+		name, err := archiveName(root, path)
 		if err != nil {
 			return fmt.Errorf("relative name <%s>: <%s>, %w", path, root, err)
 		}
@@ -119,6 +112,25 @@ func writeToArchive(tw *tar.Writer, root string, skipSymlinks bool, written *int
 
 		return nil
 	}
+}
+
+// archiveName returns the name path is archived under: relative to root when path is inside root, so the archive
+// restores into the directory it is extracted in, and absolute otherwise.
+func archiveName(root, path string) (string, error) {
+	if !strings.HasPrefix(path, "/") {
+		return relative(root, path)
+	}
+
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("absolute root <%s>, %w", root, err)
+	}
+
+	if rel, err := filepath.Rel(absRoot, path); err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, "../") {
+		return filepath.ToSlash(rel), nil
+	}
+
+	return filepath.Abs(path)
 }
 
 func relative(parent string, path string) (string, error) {
@@ -175,6 +187,11 @@ func (a *Archive) Extract(dst string, r io.Reader) (int64, error) {
 	var (
 		written int64
 		tr      = tar.NewReader(r)
+		first   = true
+		// absMount is where an archive of absolute names was created from, when that is the relative mount dst.
+		// Archives created before names were stored relative to the root hold the absolute path of the directory
+		// they were created in; their entries are restored under dst instead.
+		absMount string
 	)
 
 	for {
@@ -189,10 +206,20 @@ func (a *Archive) Extract(dst string, r io.Reader) (int64, error) {
 			continue
 		}
 
+		if first {
+			first = false
+			if !filepath.IsAbs(dst) && strings.HasSuffix(h.Name, "/"+filepath.ToSlash(filepath.Clean(dst))) {
+				absMount = h.Name
+			}
+		}
+
 		var target string
-		if dst == h.Name || strings.HasPrefix(h.Name, "/") {
+		switch {
+		case absMount != "" && (h.Name == absMount || strings.HasPrefix(h.Name, absMount+"/")):
+			target = filepath.Join(dst, strings.TrimPrefix(h.Name, absMount))
+		case dst == h.Name || strings.HasPrefix(h.Name, "/"):
 			target = h.Name
-		} else {
+		default:
 			name, err := relative(dst, h.Name)
 			if err != nil {
 				return 0, fmt.Errorf("relative name, %w", err)
