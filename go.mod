@@ -16,7 +16,7 @@ require (
 	github.com/go-kit/log v0.2.1
 	github.com/google/go-cmp v0.5.9
 	github.com/hashicorp/go-retryablehttp v0.7.7
-	github.com/klauspost/compress v1.15.9
+	github.com/klauspost/compress v1.18.7
 	github.com/pkg/errors v0.9.1
 	github.com/pkg/sftp v1.11.0
 	github.com/urfave/cli/v2 v2.14.1
