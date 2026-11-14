@@ -2,7 +2,7 @@ module github.com/meltwater/drone-cache
 
 go 1.24.0
 
-toolchain go1.24.12
+toolchain go1.26.11
 
 require (
 	cloud.google.com/go/storage v1.30.1
